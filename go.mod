@@ -2,7 +2,10 @@ module github.com/tailscale/ts-plug
 
 go 1.26
 
-require tailscale.com v1.94.2
+require (
+	golang.org/x/net v0.48.0
+	tailscale.com v1.94.2
+)
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
@@ -53,7 +56,6 @@ require (
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
-	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/oauth2 v0.32.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect

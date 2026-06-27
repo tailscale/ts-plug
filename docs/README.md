@@ -1,6 +1,6 @@
 # Documentation Index
 
-Complete documentation for ts-plug and ts-unplug.
+Complete documentation for ts-plug, ts-unplug, and ts-unplug-proxy.
 
 ## Core Guides
 
@@ -34,6 +34,24 @@ Complete guide for accessing remote Tailscale services locally.
 **Quick start:**
 ```sh
 ts-unplug -dir ./state -port 8080 myserver.tailnet.ts.net
+```
+
+---
+
+### [ts-unplug-proxy Guide](./ts-unplug-proxy.md)
+Complete guide for running local SOCKS5 and HTTP proxies into your tailnet.
+
+**Topics covered:**
+- SOCKS5 and HTTP client setup
+- Tailnet DNS through proxy-aware clients
+- Shared and separate listener ports
+- Security considerations and troubleshooting
+
+**Quick start:**
+```sh
+ts-unplug-proxy -dir ./state -socks5 localhost:1080 -http localhost:8080
+curl --socks5-hostname localhost:1080 http://myserver.tailnet.ts.net
+curl -x http://localhost:8080 http://myserver.tailnet.ts.net
 ```
 
 ---
@@ -83,6 +101,7 @@ CMD ["npm", "start"]
 |----------|------|---------|
 | Share local dev server | ts-plug | `ts-plug -hostname dev -- npm start` |
 | Access remote database | ts-unplug | `ts-unplug -dir ./state -port 5432 db.ts.net:5432` |
+| Route many tailnet services through one local proxy | ts-unplug-proxy | `ts-unplug-proxy -dir ./state -socks5 localhost:1080` |
 | Test webhooks | ts-plug | `ts-plug -public -hostname webhook -- ./server` |
 | Test against staging | ts-unplug | `ts-unplug -dir ./state -port 8080 api-staging.ts.net` |
 | Deploy in container | ts-plug | Use as Docker ENTRYPOINT |
@@ -91,19 +110,19 @@ CMD ["npm", "start"]
 
 ### Common Flags
 
-| Flag | ts-plug | ts-unplug |
-|------|---------|-----------|
-| Hostname | `-hostname myapp` | `-hostname myproxy` |
-| State dir | `-dir .data` (default) | `-dir ./state` (required) |
-| Port | `-https-port 443:8080` | `-port 8080` |
-| Protocol | `-http`, `-https`, `-dns` | HTTP only |
-| Public | `-public` | N/A |
-| Debug | `-log debug` | `-debug-tsnet` |
+| Flag | ts-plug | ts-unplug | ts-unplug-proxy |
+|------|---------|-----------|--------------------|
+| Hostname | `-hostname myapp` | `-hostname myproxy` | N/A |
+| State dir | `-dir .data` (default) | `-dir ./state` (required) | `-dir ./state` (required) |
+| Port | `-https-port 443:8080` | `-port 8080` | `-socks5 localhost:1080`, `-http localhost:8080` |
+| Protocol | `-http`, `-https`, `-dns` | HTTP only | SOCKS5 and HTTP proxy |
+| Public | `-public` | N/A | N/A |
+| Debug | `-log debug` | `-debug-tsnet` | `-v`, `-vv` |
 
 ## Getting Started
 
 ```sh
-make                    # Build both binaries
+make                    # Build all binaries
 make install            # Install to $GOPATH/bin
 ```
 
@@ -115,6 +134,13 @@ Try ts-plug:
 Try ts-unplug:
 ```sh
 ./build/ts-unplug -dir ./state -port 8080 someservice.yournet.ts.net
+```
+
+Try ts-unplug-proxy:
+```sh
+./build/ts-unplug-proxy -dir ./state -socks5 localhost:1080 -http localhost:8080
+curl --socks5-hostname localhost:1080 http://someservice.yournet.ts.net
+curl -x http://localhost:8080 http://someservice.yournet.ts.net
 ```
 
 ## Navigation
@@ -151,6 +177,7 @@ Try ts-unplug:
 - [Docker Examples](../docker/) - Real container deployments
 - [ts-plug Source](../cmd/ts-multi-plug/) - Implementation details
 - [ts-unplug Source](../cmd/ts-unplug/) - Implementation details
+- [ts-unplug-proxy Source](../cmd/ts-unplug-proxy/) - Implementation details
 
 ## Contributing
 
