@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/net/dns/dnsmessage"
 	"tailscale.com/client/local"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/proxymux"
 	"tailscale.com/net/socks5"
@@ -33,6 +34,7 @@ var (
 	flagVerboseTSNet = flag.Bool("vv", false, "log proxy connections and tsnet debug info")
 	flagSOCKS5Addr   = flag.String("socks5", "", "SOCKS5 proxy listen address")
 	flagHTTPAddr     = flag.String("http", "", "HTTP proxy listen address")
+	flagNoExitNode   = flag.Bool("disable-exit-node", false, "disable automatic tailnet exit node use")
 )
 
 type serveResult struct {
@@ -120,6 +122,11 @@ func main() {
 		slog.Error("failed to get tsnet local client", slog.Any("error", err))
 		os.Exit(1)
 	}
+	if !*flagNoExitNode {
+		if err := useExitNodeIfAvailable(ctx, lc); err != nil {
+			slog.Warn("failed to configure tailnet exit node", slog.Any("error", err))
+		}
+	}
 	dialer := (&tailnetDialer{ts: ts, lc: lc}).Dial
 
 	serveErr := make(chan serveResult, 2)
@@ -183,6 +190,32 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+func useExitNodeIfAvailable(ctx context.Context, lc *local.Client) error {
+	suggestion, err := lc.SuggestExitNode(ctx)
+	if err != nil {
+		return fmt.Errorf("suggest exit node: %w", err)
+	}
+	if suggestion.ID == "" {
+		slog.Info("no tailnet exit node available")
+		return nil
+	}
+
+	prefs, err := lc.EditPrefs(ctx, &ipn.MaskedPrefs{
+		Prefs:           ipn.Prefs{AutoExitNode: ipn.AnyExitNode},
+		AutoExitNodeSet: true,
+	})
+	if err != nil {
+		return fmt.Errorf("enable automatic exit node: %w", err)
+	}
+
+	slog.Info("automatic tailnet exit node enabled",
+		slog.String("suggested_exit_node", string(suggestion.ID)),
+		slog.String("suggested_exit_node_name", suggestion.Name),
+		slog.String("selected_exit_node", string(prefs.ExitNodeID)),
+	)
+	return nil
 }
 
 func (d *tailnetDialer) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
