@@ -33,7 +33,7 @@ Proxy clients provide the remote destination, so this command does not take a po
 
 Use `-v` to log proxy connections. Use `-vv` to include `tsnet.Server` debug logs.
 
-Use `-accept-routes` when reaching subnet routes or Tailscale Services advertised by other nodes. On macOS, use `-disable-interface-binding` when another network tunnel controls the default interface.
+Use `-accept-routes` when reaching subnet routes or Tailscale Services advertised by other nodes. On macOS, use `-disable-interface-binding` when another network tunnel controls the system's interface and route selection.
 
 ## Documentation
 

@@ -80,7 +80,7 @@ ts-unplug-proxy -dir ./state -socks5 localhost:1080 -http localhost:1080
 
 - `-accept-routes` - Accept subnet and Tailscale Service routes advertised by other nodes
 
-- `-disable-interface-binding` - On macOS, disable binding outbound connections to the system default physical interface. Use this when another network tunnel controls the default interface.
+- `-disable-interface-binding` - On macOS, disable Tailscale's network namespace integration, including physical-interface binding. Use this when another network tunnel controls the system's interface and route selection.
 
 ## Examples
 

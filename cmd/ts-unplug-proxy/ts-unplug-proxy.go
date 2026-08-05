@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
 	"tailscale.com/client/local"
@@ -36,7 +37,7 @@ var (
 	flagSOCKS5Addr              = flag.String("socks5", "", "SOCKS5 proxy listen address")
 	flagHTTPAddr                = flag.String("http", "", "HTTP proxy listen address")
 	flagNoExitNode              = flag.Bool("disable-exit-node", false, "disable automatic tailnet exit node use")
-	flagDisableInterfaceBinding = flag.Bool("disable-interface-binding", false, "disable Tailscale's macOS physical-interface binding")
+	flagDisableInterfaceBinding = flag.Bool("disable-interface-binding", false, "disable Tailscale's macOS network namespace integration")
 	flagAcceptRoutes            = flag.Bool("accept-routes", false, "accept advertised subnet and Service routes")
 )
 
@@ -107,9 +108,10 @@ func main() {
 		}
 	}
 	if *flagDisableInterfaceBinding {
-		netns.SetDisableBindConnToInterface(func(format string, args ...any) {
-			slog.Debug(fmt.Sprintf(format, args...))
-		}, true)
+		// tsnet's network namespace can bind outbound connections to the
+		// macOS default interface. Disable it when another tunnel controls
+		// the system's interface and route selection.
+		netns.SetEnabled(false)
 	}
 
 	st, err := ts.Up(ctx)
@@ -237,7 +239,10 @@ func useExitNodeIfAvailable(ctx context.Context, lc *local.Client) error {
 }
 
 func (d *tailnetDialer) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
-	resolvedAddr, resolved, err := d.resolveAddr(ctx, network, addr)
+	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	resolvedAddr, resolved, err := d.resolveAddr(dialCtx, network, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -246,14 +251,14 @@ func (d *tailnetDialer) Dial(ctx context.Context, network, addr string) (net.Con
 			slog.String("network", network),
 			slog.String("addr", addr),
 		)
-		return d.ts.Dial(ctx, network, addr)
+		return d.ts.Dial(dialCtx, network, addr)
 	}
 	slog.Debug("dialing through tailnet",
 		slog.String("network", network),
 		slog.String("addr", addr),
 		slog.String("resolved_addr", resolvedAddr),
 	)
-	return d.ts.Dial(ctx, network, resolvedAddr)
+	return d.ts.Dial(dialCtx, network, resolvedAddr)
 }
 
 func (d *tailnetDialer) resolveAddr(ctx context.Context, network, addr string) (resolvedAddr string, resolved bool, err error) {
