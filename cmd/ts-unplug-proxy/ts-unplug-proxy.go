@@ -16,11 +16,13 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
 	"tailscale.com/client/local"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/net/netns"
 	"tailscale.com/net/proxymux"
 	"tailscale.com/net/socks5"
 	"tailscale.com/tsnet"
@@ -29,12 +31,14 @@ import (
 const tsnetHostname = "tsunplug-proxy"
 
 var (
-	flagDir          = flag.String("dir", "", "tsnet server directory")
-	flagVerboseProxy = flag.Bool("v", false, "log proxy connections")
-	flagVerboseTSNet = flag.Bool("vv", false, "log proxy connections and tsnet debug info")
-	flagSOCKS5Addr   = flag.String("socks5", "", "SOCKS5 proxy listen address")
-	flagHTTPAddr     = flag.String("http", "", "HTTP proxy listen address")
-	flagNoExitNode   = flag.Bool("disable-exit-node", false, "disable automatic tailnet exit node use")
+	flagDir                     = flag.String("dir", "", "tsnet server directory")
+	flagVerboseProxy            = flag.Bool("v", false, "log proxy connections")
+	flagVerboseTSNet            = flag.Bool("vv", false, "log proxy connections and tsnet debug info")
+	flagSOCKS5Addr              = flag.String("socks5", "", "SOCKS5 proxy listen address")
+	flagHTTPAddr                = flag.String("http", "", "HTTP proxy listen address")
+	flagNoExitNode              = flag.Bool("disable-exit-node", false, "disable automatic tailnet exit node use")
+	flagDisableInterfaceBinding = flag.Bool("disable-interface-binding", false, "disable Tailscale's macOS network namespace integration")
+	flagAcceptRoutes            = flag.Bool("accept-routes", false, "accept advertised subnet and Service routes")
 )
 
 type serveResult struct {
@@ -103,6 +107,12 @@ func main() {
 			slog.Debug(fmt.Sprintf(format, args...))
 		}
 	}
+	if *flagDisableInterfaceBinding {
+		// tsnet's network namespace can bind outbound connections to the
+		// macOS default interface. Disable it when another tunnel controls
+		// the system's interface and route selection.
+		netns.SetEnabled(false)
+	}
 
 	st, err := ts.Up(ctx)
 	if err != nil {
@@ -121,6 +131,16 @@ func main() {
 	if err != nil {
 		slog.Error("failed to get tsnet local client", slog.Any("error", err))
 		os.Exit(1)
+	}
+	if *flagAcceptRoutes {
+		if _, err := lc.EditPrefs(ctx, &ipn.MaskedPrefs{
+			Prefs:       ipn.Prefs{RouteAll: true},
+			RouteAllSet: true,
+		}); err != nil {
+			slog.Error("failed to enable advertised routes", slog.Any("error", err))
+			os.Exit(1)
+		}
+		slog.Info("advertised subnet and Service routes enabled")
 	}
 	if !*flagNoExitNode {
 		if err := useExitNodeIfAvailable(ctx, lc); err != nil {
@@ -219,7 +239,10 @@ func useExitNodeIfAvailable(ctx context.Context, lc *local.Client) error {
 }
 
 func (d *tailnetDialer) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
-	resolvedAddr, resolved, err := d.resolveAddr(ctx, network, addr)
+	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	resolvedAddr, resolved, err := d.resolveAddr(dialCtx, network, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -228,14 +251,14 @@ func (d *tailnetDialer) Dial(ctx context.Context, network, addr string) (net.Con
 			slog.String("network", network),
 			slog.String("addr", addr),
 		)
-		return d.ts.Dial(ctx, network, addr)
+		return d.ts.Dial(dialCtx, network, addr)
 	}
 	slog.Debug("dialing through tailnet",
 		slog.String("network", network),
 		slog.String("addr", addr),
 		slog.String("resolved_addr", resolvedAddr),
 	)
-	return d.ts.Dial(ctx, network, resolvedAddr)
+	return d.ts.Dial(dialCtx, network, resolvedAddr)
 }
 
 func (d *tailnetDialer) resolveAddr(ctx context.Context, network, addr string) (resolvedAddr string, resolved bool, err error) {
@@ -247,13 +270,22 @@ func (d *tailnetDialer) resolveAddr(ctx context.Context, network, addr string) (
 		return net.JoinHostPort(ip.String(), port), true, nil
 	}
 
-	status, err := d.lc.Status(ctx)
-	if err != nil {
-		slog.Debug("tailnet status lookup failed", slog.String("host", host), slog.Any("error", err))
+	status, statusErr := d.lc.Status(ctx)
+	if statusErr != nil {
+		slog.Debug("tailnet status lookup failed", slog.String("host", host), slog.Any("error", statusErr))
 	}
-	ips := lookupMagicDNS(status, network, host)
+
+	// Query Tailscale DNS before using peer status aliases. A Tailscale Service
+	// name can intentionally collide with a host name (for example, the
+	// service "example" hosted by the peer "example"). Peer status then
+	// contains the host IP, while Tailscale DNS contains the Service VIP.
+	ips, lookupErr := d.lookupIP(ctx, network, host)
+	err = lookupErr
 	if len(ips) == 0 {
-		ips, err = d.lookupIP(ctx, network, host)
+		ips = lookupMagicDNS(status, network, host)
+		if len(ips) > 0 {
+			err = nil
+		}
 	}
 	if err != nil {
 		if isStrictTailnetHost(status, host) {
