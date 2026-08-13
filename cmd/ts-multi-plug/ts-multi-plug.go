@@ -18,12 +18,16 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"tailscale.com/client/local"
 	"tailscale.com/tsnet"
 )
+
+// lcPtr is set after LocalClient() so the signal handler can call Logout.
+var lcPtr atomic.Pointer[local.Client]
 
 var (
 	flagHostname   string
@@ -125,21 +129,28 @@ func main() {
 		slog.Info("command started")
 	}
 
-	// handle the exit cases either from signal or the upstream command exiting
+	// cmd.Wait() runs in its own goroutine so it does not block the signal
+	// handler below. Evaluated inline in a select send case it stalls until
+	// the child exits, which would prevent the Logout call from ever firing.
 	go func() {
-		for {
-			select {
-			case cmdExitChan <- cmd.Wait():
-				// the upstream command has exited
-				return
-			case sig := <-signalChan:
-				slog.Info("signal received, shutting down...", "sig", sig.String())
+		cmdExitChan <- cmd.Wait()
+	}()
 
-				// this will cause the case above with cmd.Wait() to return
-				// as well ts.Up() to exit early if it hasn't been fully initialized yet
-				cancelCtx()
+	go func() {
+		sig := <-signalChan
+		slog.Info("signal received, shutting down...", "sig", sig.String())
+
+		if lc := lcPtr.Load(); lc != nil {
+			logoutCtx, cancelLogout := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := lc.Logout(logoutCtx); err != nil {
+				slog.Warn("tsnet logout failed", "error", err)
+			} else {
+				slog.Info("tsnet logout complete")
 			}
+			cancelLogout()
 		}
+
+		cancelCtx()
 	}()
 
 	ts := &tsnet.Server{
@@ -174,6 +185,7 @@ func main() {
 		cancelCtx()
 		os.Exit(1)
 	}
+	lcPtr.Store(lc)
 
 	hostname := strings.TrimSuffix(st.Self.DNSName, ".")
 
