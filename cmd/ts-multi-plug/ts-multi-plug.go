@@ -44,6 +44,10 @@ var (
 	flagDNS   = NewPortMapFlag(53, 53)
 
 	flagPublic = flag.Bool("public", false, "Enable public https access")
+
+	flagWaitForUpstream        = flag.String("wait-for-upstream", "", "URL to poll for a 2xx response before starting the tailnet listeners (e.g. http://127.0.0.1:8080/health). Empty disables the wait.")
+	flagWaitForUpstreamTimeout = flag.Duration("wait-for-upstream-timeout", 0, "Maximum wait time for -wait-for-upstream (0 = wait forever)")
+	flagWaitForUpstreamPeriod  = flag.Duration("wait-for-upstream-period", 2*time.Second, "Interval between -wait-for-upstream probes")
 )
 
 func init() {
@@ -99,8 +103,9 @@ func main() {
 		flagDNS.Set("")
 	}
 
-	// cmdExitChannel receives the error when cmd.Wait() return
-	cmdExitChan := make(chan error)
+	// Buffered so the cmd.Wait goroutine can exit even if main exits early
+	// (e.g. after -wait-for-upstream fails).
+	cmdExitChan := make(chan error, 1)
 
 	// signalChan receives OS signals for shutdown
 	signalChan := make(chan os.Signal, 1)
@@ -125,22 +130,27 @@ func main() {
 		slog.Info("command started")
 	}
 
-	// handle the exit cases either from signal or the upstream command exiting
+	// cmd.Wait() runs in its own goroutine so it does not block the signal
+	// handler below and so the child's exit cancels the main context — that
+	// gives -wait-for-upstream a way to abort if the wrapped process dies.
 	go func() {
-		for {
-			select {
-			case cmdExitChan <- cmd.Wait():
-				// the upstream command has exited
-				return
-			case sig := <-signalChan:
-				slog.Info("signal received, shutting down...", "sig", sig.String())
-
-				// this will cause the case above with cmd.Wait() to return
-				// as well ts.Up() to exit early if it hasn't been fully initialized yet
-				cancelCtx()
-			}
-		}
+		cmdExitChan <- cmd.Wait()
+		cancelCtx()
 	}()
+
+	go func() {
+		sig := <-signalChan
+		slog.Info("signal received, shutting down...", "sig", sig.String())
+		cancelCtx()
+	}()
+
+	if *flagWaitForUpstream != "" {
+		if err := waitForUpstream(ctx, *flagWaitForUpstream, *flagWaitForUpstreamPeriod, *flagWaitForUpstreamTimeout); err != nil {
+			slog.Error("wait-for-upstream failed", "error", err)
+			cancelCtx()
+			os.Exit(1)
+		}
+	}
 
 	ts := &tsnet.Server{
 		Hostname: flagHostname,
@@ -373,6 +383,62 @@ func handleDNSQuery(query []byte, clientAddr net.Addr, tsConn net.PacketConn, up
 	}
 
 	slog.Debug("DNS query handled", "client", clientAddr, "size", n)
+}
+
+// waitForUpstream polls the given URL until it responds with a 2xx status or ctx is cancelled.
+func waitForUpstream(ctx context.Context, target string, period, overallTimeout time.Duration) error {
+	u, err := url.Parse(target)
+	if err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("invalid -wait-for-upstream URL %q: must be an absolute http or https URL", target)
+	}
+	if period <= 0 {
+		return fmt.Errorf("invalid -wait-for-upstream-period %s: must be > 0", period)
+	}
+
+	slog.Info("waiting for upstream to become ready", "url", target, "period", period, "timeout", overallTimeout)
+
+	waitCtx := ctx
+	if overallTimeout > 0 {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, overallTimeout)
+		defer cancel()
+	}
+
+	client := &http.Client{Timeout: period}
+	ticker := time.NewTicker(period)
+	defer ticker.Stop()
+
+	attempt := 0
+	for {
+		attempt++
+		req, err := http.NewRequestWithContext(waitCtx, http.MethodGet, target, nil)
+		if err != nil {
+			return fmt.Errorf("building probe request: %w", err)
+		}
+		resp, err := client.Do(req)
+		// resp can be non-nil even on transport errors (e.g. redirect policy).
+		if resp != nil {
+			resp.Body.Close()
+		}
+		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			slog.Info("upstream ready", "url", target, "status", resp.StatusCode, "attempts", attempt)
+			return nil
+		}
+		if err != nil {
+			slog.Debug("upstream not ready", "url", target, "error", err, "attempts", attempt)
+		} else {
+			slog.Debug("upstream not ready", "url", target, "status", resp.StatusCode, "attempts", attempt)
+		}
+
+		select {
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				return fmt.Errorf("wait-for-upstream cancelled: %w", ctx.Err())
+			}
+			return fmt.Errorf("wait-for-upstream timed out after %s (%d attempts)", overallTimeout, attempt)
+		case <-ticker.C:
+		}
+	}
 }
 
 // createReverseProxy creates a reverse proxy to the specified localhost port
