@@ -44,6 +44,10 @@ var (
 	flagDNS   = NewPortMapFlag(53, 53)
 
 	flagPublic = flag.Bool("public", false, "Enable public https access")
+
+	flagDialTimeout           = flag.Duration("dial-timeout", 2*time.Second, "Reverse-proxy dial timeout to the upstream (0 = no limit)")
+	flagResponseHeaderTimeout = flag.Duration("response-header-timeout", time.Second, "Reverse-proxy response-header timeout (0 = no limit; useful for streaming / slow-first-byte upstreams)")
+	flagIdleConnTimeout       = flag.Duration("idle-conn-timeout", 0, "Reverse-proxy idle connection timeout (0 = no limit)")
 )
 
 func init() {
@@ -80,6 +84,17 @@ func main() {
 	if len(cmdArgs) == 0 {
 		slog.Error("no command to run")
 		os.Exit(1)
+	}
+
+	for name, d := range map[string]time.Duration{
+		"dial-timeout":            *flagDialTimeout,
+		"response-header-timeout": *flagResponseHeaderTimeout,
+		"idle-conn-timeout":       *flagIdleConnTimeout,
+	} {
+		if d < 0 {
+			slog.Error("negative duration not allowed", "flag", name, "value", d)
+			os.Exit(1)
+		}
 	}
 
 	// Check that at least one listener is enabled
@@ -384,11 +399,13 @@ func createReverseProxy(port int) *httputil.ReverseProxy {
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(u)
+
 	proxy.Transport = &http.Transport{
 		DialContext: (&net.Dialer{
-			Timeout: 2 * time.Second,
+			Timeout: *flagDialTimeout,
 		}).DialContext,
-		ResponseHeaderTimeout: time.Second,
+		ResponseHeaderTimeout: *flagResponseHeaderTimeout,
+		IdleConnTimeout:       *flagIdleConnTimeout,
 	}
 
 	return proxy
