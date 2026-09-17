@@ -78,6 +78,10 @@ ts-unplug-proxy -dir ./state -socks5 localhost:1080 -http localhost:1080
   ts-unplug-proxy -dir ./state -vv -socks5 localhost:1080
   ```
 
+- `-accept-routes` - Accept subnet and Tailscale Service routes advertised by other nodes
+
+- `-disable-interface-binding` - On macOS, disable Tailscale's network namespace integration, including physical-interface binding. Use this when another network tunnel controls the system's interface and route selection.
+
 ## Examples
 
 ### SOCKS5 With curl
@@ -140,8 +144,8 @@ ts-unplug-proxy:
 1. Connects a `tsnet.Server` to your tailnet
 2. Listens locally for SOCKS5 and/or HTTP proxy connections
 3. Receives each requested destination from the proxy client
-4. Resolves MagicDNS peer names from Tailscale status, including short names like `sippy`
-5. Falls back to Tailscale DNS via `LocalClient.QueryDNS` for other DNS records
+4. Resolves destinations through Tailscale DNS via `LocalClient.QueryDNS`
+5. Falls back to MagicDNS peer names from Tailscale status, including short names like `sippy`
 6. Falls back to normal `tsnet.Server.Dial` for non-tailnet public names such as `www.google.ca`
 7. Dials resolved IPs with `tsnet.Server.Dial`
 8. Relays traffic between the client and the destination
